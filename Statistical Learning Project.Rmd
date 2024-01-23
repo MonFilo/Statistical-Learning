@@ -1,0 +1,410 @@
+---
+title: "Statistical Learning - Exam Assignmet"
+author: "Filippo Monaco"
+date: "25.01.2024"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE) 
+```
+
+The goal of this project is to predict if a person is ill (class 1) or not (class 0), based on health characteristics.
+Three different classification models are showcased and the final result will be obtained using a Balanced Logarithmic Loss.
+
+# Data
+
+## Data Loading
+First, data needs to be uploaded.
+
+There is a Training dataset ('train.csv') and Testing dataset ('test.csv').
+
+```{r}
+library(tidyverse)
+
+# load dataframe
+df_train <- read.csv("train.csv") 
+```
+
+## Dataset Inspection
+Inspect first few rows of the training dataframe.
+```{r}
+head(df_train)
+```
+
+```{r}
+dim(df_train)
+```
+
+The training dataset is composed of 555 observations, each with 56 variables, since the first two are the index and the numeric Id (which can both be discarded), and the last one is actually the response (which will need to be removed before model fitting).
+
+Remove the X and Id variables.
+```{r}
+df_train <- select(df_train, -c(X,Id))
+```
+
+Now print a summary of all the variables.
+
+```{r}
+summary(df_train)
+```
+
+All variables are numeric, except for EJ.
+
+We can convert it into a factor variable.
+```{r}
+df_train$EJ <- as.factor(df_train$EJ)
+```
+
+We can also check the distribution of the target variables (Class).
+```{r}
+library(ggplot2)
+ggplot(data = df_train, aes(x = Class)) + geom_bar()
+```
+
+The response is very skewed towards 0. This means that we are dealing with an unbalanced dataset, since most observations are of class 0. This is a problem that will need to be dealt with later on.
+
+
+We can also study the relationship between pairs of predictors, but since we don't know what the predictors actually are, we can only plot random pairs together in hope of finding some pattern in the data.
+
+```{r}
+library(gridExtra)
+p1 <- ggplot(df_train, aes(x = AX, y = EL)) +  geom_point(color="black")
+p2 <- ggplot(df_train, aes(x = EB, y = GH)) +  geom_point(color="red")
+p3 <- ggplot(df_train, aes(x = FC, y = BC)) +  geom_point(color="green")
+p4 <- ggplot(df_train, aes(x = AH, y = DU)) +  geom_point(color="yellow")
+p5 <- ggplot(df_train, aes(x = BQ, y = DY)) +  geom_point(color="purple")
+p6 <- ggplot(df_train, aes(x = GB, y = FI)) +  geom_point(color="blue")
+grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 3)
+```
+
+These plots don't provide any additional information, since complete enumeration is impossible.
+
+
+
+## Missing Values
+
+We will now take a closer look at the dataset and see if there are any missing values.
+
+```{r missing_Values2}
+library(finalfit)
+library(visdat)
+library(naniar)
+ff_glimpse(df_train)
+```
+
+We can see that there are multiple missing values for the following predictors:
+
+BQ, CB, CC, DU, EL, FC, FL, FS, GL.
+
+
+We can use a HEATMAP to take a closer look at the missing values for each of these predictors.
+
+Since there is a limited amount of both observations (<1000) and predictors (<100), there is no need to apply a dimensionality reduction technique (such as PCA).
+```{r}
+df_train %>% select(BQ, CB, GL, FS, FL, FC, EL, DU, CC) %>% vis_miss()
+```
+
+We can also use a CO-OCCURRENCES PLOT, which can tell us more about missing values for different predictor combinations.
+```{r}
+df_train %>% select(BQ, CB, GL, FS, FL, FC, EL, DU, CC) %>% gg_miss_upset()
+```
+
+We can see that variables EL and BQ share 43 missing values, while the other variables only have a couple of NA's.
+
+Let's study in more depth the relationship between EL and BQ, by plotting the two variables.
+
+```{r}
+ggplot(df_train, aes(x = BQ, y = EL)) + geom_miss_point()
+```
+
+We can clearly see that missing values are present when one of the two variables has low values, or when they both have low values.
+
+Since we have no knowledge on what the variables actually mean, we can only say that the missing values are due to random occurrence, and, in particular, are Missing at Random (MAR).
+
+In order to proceed, we could either:
+
+- delete all the observations that have a missing value, but it would mean deleting 108/555 * 100 ~= 20% of the available dataset.
+
+- estimate the missing values based on the relationships between the non-missing predictors
+
+We can thus replace all the missing values with the median value of that specific predictor.
+```{r}
+df_train <- df_train %>% mutate(across(where(is.numeric), ~replace_na(., median(., na.rm=TRUE))))
+```
+If we now plot the heatmap of missing values, we can clearly see that now there are none.
+```{r}
+vis_miss(df_train)
+```
+
+
+## Data Pre Processing
+
+In order to properly use the data, we need to normalize it by scaling it.
+
+We can now scale all the variables (except for the categorical one)
+
+```{r}
+df_numeric <- select(df_train, -c(EJ, Class))
+df_fac <- select(df_train, c(EJ, Class))
+df_scaled <- cbind(scale(df_numeric), df_fac)
+```
+
+As explained above, the dataset is heavily unbalanced w.r.t. the response.
+
+In order to tackle this issue, we can apply an over sampling technique, using the library ROSE.
+
+```{r}
+library(ROSE)
+data_balanced <- ovun.sample(Class ~ ., data = df_scaled, method = "over")$data
+ggplot(data = data_balanced, aes(x = Class)) + geom_bar()
+```
+
+We can see that now the dataset is much more balanced, having a near 50/50 split between the two classes.
+
+
+## Training and Validation
+We can now split the training set into training and validation.
+
+First, we remove the target variable from the training dataset, and save it in an appropriate new variable.
+```{r}
+target <- select(data_balanced, Class)
+data_balanced <- select(data_balanced, -Class)
+```
+
+Then, we can split the training set by a 80/20 % split.
+```{r}
+sample <- sample(c(TRUE, FALSE), nrow(data_balanced), replace = TRUE, prob = c(0.8, 0.2))
+x_train  <- data_balanced[sample, ]
+x_val <- data_balanced[!sample, ]
+y_train <- target[sample, ]
+y_val <- target[!sample,]
+```
+
+# Models
+
+We can try out different models to try and best predict the target variable.
+
+## Decision Tree
+First we try a tree model:
+
+```{r}
+library(tree)
+tree_model <- tree(as.factor(y_train) ~., x_train)
+tree_preds <- predict(tree_model, x_val, type = "class")
+tree_table <- table(tree_preds , y_val)
+tree_table
+```
+
+Just by looking at the confusion matrix, we can see that our tree model has 94 True Positives, 88 True Negatives, 4 False Positives, and 8 False Negatives.
+
+Using these, we can calculate accuracy, precision, recall, and F1 score for our model.
+
+```{r}
+tree_accuracy <- (tree_table[1,1] + tree_table[2,2])/(tree_table[1,1] + tree_table[1,2] + tree_table[2,1] + tree_table[2,2])
+tree_precision <- tree_table[1,1]/(tree_table[1,1] + tree_table[1,2])
+tree_recall <- tree_table[1,1]/(tree_table[1,1] + tree_table[2,1])
+tree_F1 <- 2 * (tree_precision * tree_recall)/(tree_precision + tree_recall)
+
+tree_results <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1 Score"),
+  Value = c(tree_accuracy, tree_precision, tree_recall, tree_F1)
+)
+print(tree_results)
+```
+Performance is already good, but we can try if cross-validation can help.
+```{r}
+cv_tree <- cv.tree(tree_model, FUN = prune.misclass)
+cv_tree
+```
+
+We can now plot the cross-validation error rate ($dev) as a function of size.
+
+```{r}
+plot(cv_tree$size, cv_tree$dev, type = "b")
+```
+
+We can see that the decision tree with 16 terminal nodes looks to be the best choice for our model, in terms of c-v error rate.
+
+```{r}
+tree_model_opt <- prune.tree(tree_model, best = 16)
+tree_opt_preds <- predict(tree_model_opt, x_val, type = 'class')
+tree_opt_table <- table(tree_opt_preds , y_val)
+tree_opt_table
+```
+```{r}
+tree_opt_accuracy <- (tree_opt_table[1,1] + tree_opt_table[2,2])/(tree_opt_table[1,1] + tree_opt_table[1,2] + tree_opt_table[2,1] + tree_opt_table[2,2])
+tree_opt_precision <- tree_opt_table[1,1]/(tree_opt_table[1,1] + tree_opt_table[1,2])
+tree_opt_recall <- tree_opt_table[1,1]/(tree_opt_table[1,1] + tree_opt_table[2,1])
+tree_opt_F1 <- 2 * (tree_opt_precision * tree_opt_recall)/(tree_opt_precision + tree_opt_recall)
+
+tree_opt_results <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1 Score"),
+  Value = c(tree_opt_accuracy, tree_opt_precision, tree_opt_recall, tree_opt_F1)
+)
+print(tree_opt_results)
+```
+
+In this case, using c-v to prune the tree did not improve our results (it actually found a worse solution).
+
+
+
+##  Random Forest
+The second model we test is a Random Forest, using sqrt(p) as the size of considered predictors at each random split.
+
+```{r}
+library(randomForest)
+
+rf_model <- randomForest(as.factor(y_train) ~.,
+                         data = x_train,
+                         mtry = sqrt(58),
+                         importance = TRUE)
+rf_preds <- predict(rf_model,
+                    newdata = x_val,
+                    type = 'class')
+
+rf_table <- table(rf_preds , y_val)
+rf_table
+```
+```{r}
+rf_accuracy <- (rf_table[1,1] + rf_table[2,2])/(rf_table[1,1] + rf_table[1,2] + rf_table[2,1] + rf_table[2,2])
+rf_precision <- rf_table[1,1]/(rf_table[1,1] + rf_table[1,2])
+rf_recall <- rf_table[1,1]/(rf_table[1,1] + rf_table[2,1])
+rf_F1 <- 2 * (rf_precision * rf_recall)/(rf_precision + rf_recall)
+
+rf_results <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1 Score"),
+  Value = c(rf_accuracy, rf_precision, rf_recall, rf_F1)
+)
+print(rf_results)
+```
+
+Random Forest has a higher score than the simpler decision tree model.
+
+
+We can check what the most important variables are in the Random Forest model using a Variable Importance Plot. 
+```{r}
+varImpPlot(rf_model, n.var = 15)
+```
+
+By looking at both plots, we can see that the first 5 predictors seem to be the most important ones. In particular, DU and AB seem to be the two most important predictor for the Random Forest model.
+
+
+## Boosting
+As a third model, we can test the Boosting algorithm.
+
+```{r}
+library(gbm)
+
+boost_model <- gbm(as.factor(y_train) ~.,
+                   data = x_train,
+                   distribution = 'multinomial', # for classification
+                   shrinkage = 0.01,
+                   n.trees = 500,
+                   interaction.depth = 4)
+boost_preds <- predict(object = boost_model,
+                       newdata = x_val,
+                       n.trees = 500,
+                       type = 'response')
+
+boost_preds = colnames(boost_preds)[apply(boost_preds, 1, which.max)]
+
+boost_table <- table(boost_preds, y_val)
+boost_table
+```
+
+```{r}
+boost_accuracy <- (boost_table[1,1] + boost_table[2,2])/(boost_table[1,1] + boost_table[1,2] + boost_table[2,1] + boost_table[2,2])
+boost_precision <- boost_table[1,1]/(boost_table[1,1] + boost_table[1,2])
+boost_recall <- boost_table[1,1]/(boost_table[1,1] + boost_table[2,1])
+boost_F1 <- 2 * (boost_precision * boost_recall)/(boost_precision + boost_recall)
+
+boost_results <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1 Score"),
+  Value = c(boost_accuracy, boost_precision, boost_recall, boost_F1)
+)
+print(boost_results)
+```
+
+Boosting seems to have reached a higher performances compared to the simple decision tree model, but still lags behind the Random Forest model.   
+
+
+
+# Testing
+
+After comparing the three different models, we can see that the best suited one for our dataset is the Random Forest. 
+
+Thus, we can now use this model to compute the Balanced Logarithmic Loss on the test set.
+
+First, load the test data and perform the same pre-processing steps as above.
+```{r}
+df_test <- read.csv("test.csv")
+df_test <- mutate(df_test, across(where(is.numeric), ~replace_na(., median(., na.rm=TRUE))))
+df_test$EJ <- as.factor(df_test$EJ)
+df_test_EJ <- select(df_test, EJ)
+test_id <- select(df_test, Id)
+true_labels <- select(df_test, Class)
+df_test <- select(df_test, -c(X, Id, EJ, Class))
+df_test <- cbind(scale(df_test), df_test_EJ)
+```
+
+Then we can predict the labels using our model. We are interested in the probability since we are computing the Balanced Logarithmic Loss.
+```{r}
+test_preds <- predict(rf_model,
+                            newdata = df_test,
+                            type = "prob")
+```
+
+If we print the test predictions, we can see that each new observation has two values, which represent the probability of belonging to either Class 0, or Class 1.
+```{r}
+head(test_preds)
+```
+
+Now we compute the Balanced Logarithmic Loss:
+$$
+BLL =\frac{-\frac{1}{N_0}\sum_{i=1}^{N_0} y_{0i}log(p_{0i}) -\frac{1}{N_1}\sum_{i=1}^{N_1} y_{1i}log(p_{1i})}{2}
+$$
+
+where:
+
+- N_c is the number of observations of class *c*
+
+- y_ci is 1 if observation *i* belongs to class *c*, 0 otherwise
+
+- p_ci is the predicted probability that observation *i* belongs to class *c*
+
+additionally, each predicted probability p is replaced with
+
+$$
+max(min(p, 1-10^{-15}), 10^{-15})
+$$
+
+in order to avoid extremes of the log function.
+
+```{r}
+N_0 = sum(1 - true_labels)
+N_1 = sum(true_labels)
+p_1 = pmax(pmin(test_preds, 1-1e-15), 1e-15)
+p_0 = pmax(pmin(1 - test_preds, 1-1e-15), 1e-15)
+
+log_loss_0 <- -1/N_0 * (sum((1 - true_labels)*log(p_0)))
+log_loss_1 <- -1/N_1 * (sum(true_labels*log(p_1)))
+BLL <- (log_loss_0 + log_loss_1)/2
+```
+
+
+The final result is 
+
+```{r}
+BLL
+```
+
+finally, we can save our prediction results in a .csv file.
+```{r}
+class_0 <- test_preds[,1]
+class_1 <- test_preds[,2]
+results <- data.frame(Id = test_id, class_0 = class_0, class_1 = class_1)
+write.csv(results, file = 'results.csv', row.names = FALSE, quote = FALSE)
+```
